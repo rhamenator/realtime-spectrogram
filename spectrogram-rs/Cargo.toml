@@ -1,0 +1,12 @@
+[package]
+name = "spectrogram-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal = "0.15"
+rustfft = "6.1"
+num-complex = "0.4"
+clap = { version = "4.0", features = ["derive"] }
+anyhow = "1.0"
+eframe = "0.24"
