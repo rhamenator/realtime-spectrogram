@@ -42,6 +42,7 @@ fn audio_thread(
     tx: mpsc::Sender<(Vec<f32>, Vec<f32>)>,
     running: Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<()> {
+
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -92,6 +93,7 @@ fn audio_thread(
                     .iter()
                     .map(|&s| s as f32 / u16::MAX as f32 - 0.5)
                     .collect();
+
                 handle_input(&data_f32, channels, &buf_l, &buf_r, chunk, &tx);
             },
             err_fn,
@@ -175,6 +177,7 @@ impl ColorMap {
             ColorMap::BlueRed => {
                 egui::Color32::from_rgb((t * 255.0) as u8, 0, ((1.0 - t) * 255.0) as u8)
             }
+
             ColorMap::Grayscale => {
                 let v = (t * 255.0) as u8;
                 egui::Color32::from_gray(v)
@@ -261,6 +264,18 @@ impl SpectrogramApp {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+impl Drop for SpectrogramApp {
+    fn drop(&mut self) {
+        self.stop_audio();
+    }
+}
+
+impl Drop for SpectrogramApp {
+    fn drop(&mut self) {
+        self.stop_audio();
     }
 }
 

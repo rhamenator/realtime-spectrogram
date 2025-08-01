@@ -1,5 +1,7 @@
 # Ignore Rust build directory
 spectrogram-rs/target/
 *.pyc
-
+.venv
+*.venv
+*.exe
 .fake
