@@ -246,6 +246,41 @@ impl SpectrogramApp {
             let _ = handle.join();
         }
     }
+
+    fn start_audio(&mut self) {
+        if self.running_flag.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let run_clone = running.clone();
+        let sample_rate = self.sample_rate;
+        let chunk = self.chunk;
+        let handle = thread::spawn(move || {
+            let _ = audio_thread(sample_rate, chunk, tx, run_clone);
+        });
+        self.rx = rx;
+        self.running_flag = Some(running);
+        self.handle = Some(handle);
+        self.freq_bins = chunk / 2 + 1;
+        self.history.clear();
+        self.texture = None;
+    }
+
+    fn stop_audio(&mut self) {
+        if let Some(flag) = self.running_flag.take() {
+            flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for SpectrogramApp {
+    fn drop(&mut self) {
+        self.stop_audio();
+    }
 }
 
 impl Drop for SpectrogramApp {
