@@ -1,6 +1,8 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, StreamConfig, SampleRate, BufferSize};
+use cpal::{SampleFormat, StreamConfig, BufferSize};
 use num_complex::Complex32;
 use rustfft::FftPlanner;
 use std::sync::{mpsc, Arc, Mutex};
@@ -21,38 +23,34 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let (tx, rx) = mpsc::channel::<Vec<f32>>();
     let sample_rate = args.sample_rate;
     let chunk = args.chunk;
-    let freq_bins = chunk / 2 + 1;
-
-    thread::spawn(move || {
-        if let Err(e) = audio_thread(sample_rate, chunk, tx) {
-            eprintln!("Audio thread error: {e}");
-        }
-    });
 
     let options = eframe::NativeOptions::default();
     let _ = eframe::run_native(
         "Spectrogram",
         options,
-        Box::new(move |cc| Box::new(SpectrogramApp::new(cc, rx, freq_bins))),
+        Box::new(move |cc| Box::new(SpectrogramApp::new(cc, sample_rate, chunk))),
     );
 
     Ok(())
 }
 
-fn audio_thread(sample_rate: u32, chunk: usize, tx: mpsc::Sender<Vec<f32>>) -> anyhow::Result<()> {
+fn audio_thread(sample_rate: u32, chunk: usize, tx: mpsc::Sender<Vec<f32>>, running: Arc<std::sync::atomic::AtomicBool>) -> anyhow::Result<()> {
     let host = cpal::default_host();
     let device = host
-        .default_input_device()
-        .ok_or_else(|| anyhow::anyhow!("No input device"))?;
-    let config = device.default_input_config()?;
+        .default_output_device()
+        .ok_or_else(|| anyhow::anyhow!("No output device"))?;
+    let config = device.default_output_config()?;
     let sample_format = config.sample_format();
 
     let mut stream_config: StreamConfig = config.clone().into();
-    stream_config.channels = 1;
-    stream_config.sample_rate = SampleRate(sample_rate);
+    if sample_rate != stream_config.sample_rate.0 {
+        eprintln!(
+            "Requested sample rate {sample_rate} not supported; using {}",
+            stream_config.sample_rate.0
+        );
+    }
     stream_config.buffer_size = BufferSize::Fixed(chunk as u32);
 
     let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
@@ -91,9 +89,11 @@ fn audio_thread(sample_rate: u32, chunk: usize, tx: mpsc::Sender<Vec<f32>>) -> a
     };
 
     stream.play()?;
-    loop {
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(100));
     }
+
+    Ok(())
 }
 
 fn handle_input(input: &[f32], buffer: &Arc<Mutex<Vec<f32>>>, chunk: usize, tx: &mpsc::Sender<Vec<f32>>) {
@@ -121,6 +121,10 @@ fn compute_fft_db(samples: &[f32]) -> Vec<f32> {
 
 struct SpectrogramApp {
     rx: mpsc::Receiver<Vec<f32>>,
+    sample_rate: u32,
+    chunk: usize,
+    running_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    handle: Option<std::thread::JoinHandle<()>>,
     history: Vec<Vec<f32>>,
     max_frames: usize,
     freq_bins: usize,
@@ -128,19 +132,84 @@ struct SpectrogramApp {
 }
 
 impl SpectrogramApp {
-    fn new(_cc: &eframe::CreationContext<'_>, rx: mpsc::Receiver<Vec<f32>>, freq_bins: usize) -> Self {
+    fn new(_cc: &eframe::CreationContext<'_>, sample_rate: u32, chunk: usize) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let run_clone = running.clone();
+        let handle = thread::spawn(move || {
+            let _ = audio_thread(sample_rate, chunk, tx, run_clone);
+        });
         Self {
             rx,
+            sample_rate,
+            chunk,
+            running_flag: Some(running),
+            handle: Some(handle),
             history: Vec::new(),
             max_frames: 200,
-            freq_bins,
+            freq_bins: chunk / 2 + 1,
             texture: None,
         }
+    }
+
+    fn start_audio(&mut self) {
+        if self.running_flag.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let run_clone = running.clone();
+        let sample_rate = self.sample_rate;
+        let chunk = self.chunk;
+        let handle = thread::spawn(move || {
+            let _ = audio_thread(sample_rate, chunk, tx, run_clone);
+        });
+        self.rx = rx;
+        self.running_flag = Some(running);
+        self.handle = Some(handle);
+        self.freq_bins = chunk / 2 + 1;
+        self.history.clear();
+        self.texture = None;
+    }
+
+    fn stop_audio(&mut self) {
+        if let Some(flag) = self.running_flag.take() {
+            flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for SpectrogramApp {
+    fn drop(&mut self) {
+        self.stop_audio();
     }
 }
 
 impl eframe::App for SpectrogramApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.add_enabled(self.running_flag.is_none(), egui::Button::new("Start")).clicked() {
+                    self.start_audio();
+                }
+                if ui.add_enabled(self.running_flag.is_some(), egui::Button::new("Stop")).clicked() {
+                    self.stop_audio();
+                }
+
+                ui.separator();
+
+                ui.add_enabled_ui(self.running_flag.is_none(), |ui| {
+                    ui.label("Sample Rate:");
+                    ui.add(egui::DragValue::new(&mut self.sample_rate).clamp_range(8000..=96000));
+                    ui.label("Chunk:");
+                    ui.add(egui::DragValue::new(&mut self.chunk).clamp_range(256..=8192));
+                });
+            });
+        });
+
         while let Ok(frame) = self.rx.try_recv() {
             if self.history.len() >= self.max_frames {
                 self.history.remove(0);
@@ -169,7 +238,11 @@ impl eframe::App for SpectrogramApp {
                 let available = ui.available_size();
                 ui.add(egui::Image::from_texture(tex).fit_to_exact_size(available));
             } else {
-                ui.label("Waiting for audio...");
+                if self.running_flag.is_some() {
+                    ui.label("Waiting for audio...");
+                } else {
+                    ui.label("Audio stopped");
+                }
             }
         });
 
