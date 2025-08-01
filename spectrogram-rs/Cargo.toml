@@ -10,3 +10,6 @@ num-complex = "0.4"
 clap = { version = "4.0", features = ["derive"] }
 anyhow = "1.0"
 eframe = "0.24"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["windef", "winuser"] }
