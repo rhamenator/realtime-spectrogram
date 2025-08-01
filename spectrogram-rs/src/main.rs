@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, StreamConfig, SampleRate, BufferSize};
+use cpal::{SampleFormat, StreamConfig, BufferSize};
 use num_complex::Complex32;
 use rustfft::FftPlanner;
 use std::sync::{mpsc, Arc, Mutex};
@@ -45,8 +45,12 @@ fn audio_thread(sample_rate: u32, chunk: usize, tx: mpsc::Sender<Vec<f32>>, runn
     let sample_format = config.sample_format();
 
     let mut stream_config: StreamConfig = config.clone().into();
-    stream_config.channels = 1;
-    stream_config.sample_rate = SampleRate(sample_rate);
+    if sample_rate != stream_config.sample_rate.0 {
+        eprintln!(
+            "Requested sample rate {sample_rate} not supported; using {}",
+            stream_config.sample_rate.0
+        );
+    }
     stream_config.buffer_size = BufferSize::Fixed(chunk as u32);
 
     let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
