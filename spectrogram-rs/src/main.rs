@@ -273,18 +273,6 @@ impl Drop for SpectrogramApp {
     }
 }
 
-impl Drop for SpectrogramApp {
-    fn drop(&mut self) {
-        self.stop_audio();
-    }
-}
-
-impl Drop for SpectrogramApp {
-    fn drop(&mut self) {
-        self.stop_audio();
-    }
-}
-
 impl eframe::App for SpectrogramApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
