@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, StreamConfig, BufferSize};
+use cpal::{BufferSize, SampleFormat, StreamConfig};
 use num_complex::Complex32;
 use rustfft::FftPlanner;
 use std::sync::{mpsc, Arc, Mutex};
@@ -12,7 +12,7 @@ use std::time::Duration;
 use eframe::egui;
 
 #[derive(Parser, Debug)]
-#[command(name = "spectrogram-rs", about = "Realtime audio spectrogram")] 
+#[command(name = "spectrogram-rs", about = "Realtime audio spectrogram")]
 struct Args {
     #[arg(short, long, default_value = "1024")]
     chunk: usize,
@@ -36,7 +36,13 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn audio_thread(sample_rate: u32, chunk: usize, tx: mpsc::Sender<(Vec<f32>, Vec<f32>)>, running: Arc<std::sync::atomic::AtomicBool>) -> anyhow::Result<()> {
+fn audio_thread(
+    sample_rate: u32,
+    chunk: usize,
+    tx: mpsc::Sender<(Vec<f32>, Vec<f32>)>,
+    running: Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<()> {
+
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -83,7 +89,11 @@ fn audio_thread(sample_rate: u32, chunk: usize, tx: mpsc::Sender<(Vec<f32>, Vec<
         SampleFormat::U16 => device.build_input_stream(
             &stream_config,
             move |data: &[u16], _| {
-                let data_f32: Vec<f32> = data.iter().map(|&s| s as f32 / u16::MAX as f32 - 0.5).collect();
+                let data_f32: Vec<f32> = data
+                    .iter()
+                    .map(|&s| s as f32 / u16::MAX as f32 - 0.5)
+                    .collect();
+
                 handle_input(&data_f32, channels, &buf_l, &buf_r, chunk, &tx);
             },
             err_fn,
@@ -112,7 +122,7 @@ fn handle_input(
     let mut right = buf_r.lock().unwrap();
 
     for frame in input.chunks(channels) {
-        if let Some(&l) = frame.get(0) {
+        if let Some(&l) = frame.first() {
             left.push(l);
             if channels > 1 {
                 right.push(frame[1]);
@@ -136,10 +146,14 @@ fn handle_input(
 fn compute_fft_db(samples: &[f32]) -> Vec<f32> {
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(samples.len());
-    let mut buffer: Vec<Complex32> = samples.iter().map(|&s| Complex32 { re: s, im: 0.0 }).collect();
+    let mut buffer: Vec<Complex32> = samples
+        .iter()
+        .map(|&s| Complex32 { re: s, im: 0.0 })
+        .collect();
     fft.process(&mut buffer);
-    buffer.iter()
-        .take(samples.len()/2 + 1)
+    buffer
+        .iter()
+        .take(samples.len() / 2 + 1)
         .map(|c| 20.0 * c.norm().max(1e-6).log10())
         .collect()
 }
@@ -160,7 +174,10 @@ impl ColorMap {
 
     fn color(&self, t: f32) -> egui::Color32 {
         match self {
-            ColorMap::BlueRed => egui::Color32::from_rgb((t * 255.0) as u8, 0, ((1.0 - t) * 255.0) as u8),
+            ColorMap::BlueRed => {
+                egui::Color32::from_rgb((t * 255.0) as u8, 0, ((1.0 - t) * 255.0) as u8)
+            }
+
             ColorMap::Grayscale => {
                 let v = (t * 255.0) as u8;
                 egui::Color32::from_gray(v)
@@ -170,7 +187,9 @@ impl ColorMap {
 }
 
 impl Default for ColorMap {
-    fn default() -> Self { Self::BlueRed }
+    fn default() -> Self {
+        Self::BlueRed
+    }
 }
 
 struct SpectrogramApp {
@@ -246,34 +265,11 @@ impl SpectrogramApp {
             let _ = handle.join();
         }
     }
+}
 
-    fn start_audio(&mut self) {
-        if self.running_flag.is_some() {
-            return;
-        }
-        let (tx, rx) = mpsc::channel();
-        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let run_clone = running.clone();
-        let sample_rate = self.sample_rate;
-        let chunk = self.chunk;
-        let handle = thread::spawn(move || {
-            let _ = audio_thread(sample_rate, chunk, tx, run_clone);
-        });
-        self.rx = rx;
-        self.running_flag = Some(running);
-        self.handle = Some(handle);
-        self.freq_bins = chunk / 2 + 1;
-        self.history.clear();
-        self.texture = None;
-    }
-
-    fn stop_audio(&mut self) {
-        if let Some(flag) = self.running_flag.take() {
-            flag.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+impl Drop for SpectrogramApp {
+    fn drop(&mut self) {
+        self.stop_audio();
     }
 }
 
@@ -293,10 +289,16 @@ impl eframe::App for SpectrogramApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.running_flag.is_none(), egui::Button::new("Start")).clicked() {
+                if ui
+                    .add_enabled(self.running_flag.is_none(), egui::Button::new("Start"))
+                    .clicked()
+                {
                     self.start_audio();
                 }
-                if ui.add_enabled(self.running_flag.is_some(), egui::Button::new("Stop")).clicked() {
+                if ui
+                    .add_enabled(self.running_flag.is_some(), egui::Button::new("Stop"))
+                    .clicked()
+                {
                     self.stop_audio();
                 }
 
@@ -318,8 +320,16 @@ impl eframe::App for SpectrogramApp {
                 egui::ComboBox::from_id_source("colormap")
                     .selected_text(self.colormap.as_str())
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.colormap, ColorMap::BlueRed, ColorMap::BlueRed.as_str());
-                        ui.selectable_value(&mut self.colormap, ColorMap::Grayscale, ColorMap::Grayscale.as_str());
+                        ui.selectable_value(
+                            &mut self.colormap,
+                            ColorMap::BlueRed,
+                            ColorMap::BlueRed.as_str(),
+                        );
+                        ui.selectable_value(
+                            &mut self.colormap,
+                            ColorMap::Grayscale,
+                            ColorMap::Grayscale.as_str(),
+                        );
                     });
             });
         });
@@ -353,13 +363,17 @@ impl eframe::App for SpectrogramApp {
         if !pixels_l.is_empty() {
             let size = [self.history_l.len(), self.freq_bins];
             let image = egui::ColorImage::from_rgb(size, &pixels_l);
-            let tex = self.tex_l.get_or_insert_with(|| ctx.load_texture("spec_l", image.clone(), Default::default()));
+            let tex = self.tex_l.get_or_insert_with(|| {
+                ctx.load_texture("spec_l", image.clone(), Default::default())
+            });
             tex.set(image, Default::default());
         }
         if !pixels_r.is_empty() {
             let size = [self.history_r.len(), self.freq_bins];
             let image = egui::ColorImage::from_rgb(size, &pixels_r);
-            let tex = self.tex_r.get_or_insert_with(|| ctx.load_texture("spec_r", image.clone(), Default::default()));
+            let tex = self.tex_r.get_or_insert_with(|| {
+                ctx.load_texture("spec_r", image.clone(), Default::default())
+            });
             tex.set(image, Default::default());
         }
 
@@ -368,16 +382,18 @@ impl eframe::App for SpectrogramApp {
             let half_h = available.y / 2.0;
             if let (Some(l), Some(r)) = (&self.tex_l, &self.tex_r) {
                 ui.label("Left Channel");
-                ui.add(egui::Image::from_texture(l).fit_to_exact_size(egui::vec2(available.x, half_h)));
+                ui.add(
+                    egui::Image::from_texture(l).fit_to_exact_size(egui::vec2(available.x, half_h)),
+                );
                 ui.separator();
                 ui.label("Right Channel");
-                ui.add(egui::Image::from_texture(r).fit_to_exact_size(egui::vec2(available.x, half_h)));
+                ui.add(
+                    egui::Image::from_texture(r).fit_to_exact_size(egui::vec2(available.x, half_h)),
+                );
+            } else if self.running_flag.is_some() {
+                ui.label("Waiting for audio...");
             } else {
-                if self.running_flag.is_some() {
-                    ui.label("Waiting for audio...");
-                } else {
-                    ui.label("Audio stopped");
-                }
+                ui.label("Audio stopped");
             }
         });
 
