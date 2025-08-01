@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-import os
 import platform
 import subprocess
 from pathlib import Path
 import shutil
 import sys
+
 
 def main():
     repo_root = Path(__file__).resolve().parent
@@ -18,7 +18,10 @@ def main():
             str(manifest),
         ], check=True)
     except FileNotFoundError:
-        print("cargo not found. Install Rust from https://www.rust-lang.org/.", file=sys.stderr)
+        print(
+            "cargo not found. Install Rust from https://www.rust-lang.org/.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     target_dir = repo_root / "spectrogram-rs" / "target" / "release"
@@ -35,6 +38,7 @@ def main():
     dist.mkdir(exist_ok=True)
     shutil.copy2(built, dist / built.name)
     print(f"Built executable: {dist / built.name}")
+
 
 if __name__ == "__main__":
     main()
