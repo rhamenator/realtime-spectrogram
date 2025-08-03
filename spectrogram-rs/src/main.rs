@@ -5,6 +5,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, StreamConfig};
 use num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
+use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -86,8 +87,8 @@ fn audio_thread(
     }
     stream_config.buffer_size = BufferSize::Fixed(chunk as u32);
 
-    let buffer_l = Arc::new(Mutex::new(Vec::<f32>::new()));
-    let buffer_r = Arc::new(Mutex::new(Vec::<f32>::new()));
+    let buffer_l = Arc::new(Mutex::new(VecDeque::<f32>::new()));
+    let buffer_r = Arc::new(Mutex::new(VecDeque::<f32>::new()));
     let buf_l = buffer_l.clone();
     let buf_r = buffer_r.clone();
     let fft = Arc::new(Mutex::new(FftHelper::new(chunk)));
@@ -160,8 +161,8 @@ fn audio_thread(
 fn handle_input(
     input: &[f32],
     channels: usize,
-    buf_l: &Arc<Mutex<Vec<f32>>>,
-    buf_r: &Arc<Mutex<Vec<f32>>>,
+    buf_l: &Arc<Mutex<VecDeque<f32>>>,
+    buf_r: &Arc<Mutex<VecDeque<f32>>>,
     chunk: usize,
     tx: &mpsc::Sender<(Vec<f32>, Vec<f32>)>,
     fft: &Arc<Mutex<FftHelper>>,
@@ -171,21 +172,27 @@ fn handle_input(
 
     for frame in input.chunks(channels) {
         if let Some(&l) = frame.first() {
-            left.push(l);
+            left.push_back(l);
             if channels > 1 {
-                right.push(frame[1]);
+                right.push_back(frame[1]);
             } else {
-                right.push(l);
+                right.push_back(l);
             }
         }
     }
 
     while left.len() >= chunk && right.len() >= chunk {
-        let frame_l: Vec<f32> = left.drain(..chunk).collect();
-        let frame_r: Vec<f32> = right.drain(..chunk).collect();
-        let mut fft = fft.lock().unwrap();
-        let db_l = compute_fft_db(&frame_l, &mut fft);
-        let db_r = compute_fft_db(&frame_r, &mut fft);
+        let db_l;
+        let db_r;
+        {
+            let slice_l = left.make_contiguous();
+            let slice_r = right.make_contiguous();
+            let mut fft = fft.lock().unwrap();
+            db_l = compute_fft_db(&slice_l[..chunk], &mut fft);
+            db_r = compute_fft_db(&slice_r[..chunk], &mut fft);
+        }
+        let _ = left.drain(..chunk);
+        let _ = right.drain(..chunk);
         if tx.send((db_l, db_r)).is_err() {
             return;
         }
