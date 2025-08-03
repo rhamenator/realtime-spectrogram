@@ -294,6 +294,9 @@ struct SpectrogramApp {
     freq_bins: usize,
     tex_l: Option<egui::TextureHandle>,
     tex_r: Option<egui::TextureHandle>,
+    /// Stored spectrogram pixel columns for incremental updates
+    pixels_l: std::collections::VecDeque<Vec<egui::Color32>>,
+    pixels_r: std::collections::VecDeque<Vec<egui::Color32>>,
     min_db: f32,
     max_db: f32,
     colormap: ColorMap,
@@ -324,6 +327,8 @@ impl SpectrogramApp {
             freq_bins: chunk / 2 + 1,
             tex_l: None,
             tex_r: None,
+            pixels_l: std::collections::VecDeque::new(),
+            pixels_r: std::collections::VecDeque::new(),
             min_db: -90.0,
             max_db: 0.0,
             colormap: ColorMap::default(),
@@ -333,6 +338,33 @@ impl SpectrogramApp {
             freq_max: sample_rate as f32 / 2.0,
             log_freq: false,
         }
+    }
+
+    /// Convert a single FFT frame into a column of colors (top frequency first)
+    fn frame_to_column(&self, frame: &[f32]) -> Vec<egui::Color32> {
+        let display_bins = self.freq_bins;
+        let freq_min = self.freq_min.max(0.0);
+        let freq_max = self.freq_max.min(self.sample_rate as f32 / 2.0);
+        let mut column = Vec::with_capacity(display_bins);
+        for y in (0..display_bins).rev() {
+            let frac = y as f32 / (display_bins - 1) as f32;
+            let freq = if self.log_freq {
+                if freq_min <= 0.0 {
+                    0.0
+                } else {
+                    freq_min * (freq_max / freq_min).powf(frac)
+                }
+            } else {
+                freq_min + frac * (freq_max - freq_min)
+            };
+            let bin = (((freq / self.sample_rate as f32) * self.chunk as f32).round() as usize)
+                .min(self.freq_bins - 1);
+            let v = frame.get(bin).copied().unwrap_or(self.min_db);
+            let t = ((v - self.min_db) / (self.max_db - self.min_db)).clamp(0.0, 1.0);
+            let color = self.colormap.color(t);
+            column.push(color);
+        }
+        column
     }
 
     fn start_audio(&mut self) {
@@ -355,6 +387,8 @@ impl SpectrogramApp {
             ((HISTORY_SECONDS * self.sample_rate as f32) / self.chunk as f32).ceil() as usize;
         self.history_l.clear();
         self.history_r.clear();
+        self.pixels_l.clear();
+        self.pixels_r.clear();
         self.tex_l = None;
         self.tex_r = None;
     }
@@ -496,62 +530,60 @@ impl eframe::App for SpectrogramApp {
             self.show_config = open;
         }
 
+        let mut updated = false;
         while let Ok((left, right)) = self.rx.try_recv() {
             if self.history_l.len() >= self.max_frames {
                 self.history_l.remove(0);
                 self.history_r.remove(0);
+                self.pixels_l.pop_front();
+                self.pixels_r.pop_front();
             }
+            let col_l = self.frame_to_column(&left);
+            let col_r = self.frame_to_column(&right);
+            self.pixels_l.push_back(col_l);
+            self.pixels_r.push_back(col_r);
             self.history_l.push(left);
             self.history_r.push(right);
+            updated = true;
         }
 
-        let frames_l = &self.history_l;
-        let frames_r = &self.history_r;
-        let width = frames_l.len();
-        let mut pixels_l: Vec<u8> = Vec::new();
-        let mut pixels_r: Vec<u8> = Vec::new();
-        let display_bins = self.freq_bins;
-        let freq_min = self.freq_min.max(0.0);
-        let freq_max = self.freq_max.min(self.sample_rate as f32 / 2.0);
-        for y in (0..display_bins).rev() {
-            let frac = y as f32 / (display_bins - 1) as f32;
-            let freq = if self.log_freq {
-                if freq_min <= 0.0 {
-                    0.0
-                } else {
-                    freq_min * (freq_max / freq_min).powf(frac)
+        let width = self.pixels_l.len();
+        if updated && width > 0 {
+            let display_bins = self.freq_bins;
+            let mut flat_l: Vec<egui::Color32> = Vec::with_capacity(width * display_bins);
+            let mut flat_r: Vec<egui::Color32> = Vec::with_capacity(width * display_bins);
+            for y in 0..display_bins {
+                for col in &self.pixels_l {
+                    flat_l.push(col[y]);
                 }
+                for col in &self.pixels_r {
+                    flat_r.push(col[y]);
+                }
+            }
+            let tex_options = if self.interpolate {
+                egui::TextureOptions::LINEAR
             } else {
-                freq_min + frac * (freq_max - freq_min)
+                egui::TextureOptions::NEAREST
             };
-            let bin = (((freq / self.sample_rate as f32) * self.chunk as f32).round() as usize)
-                .min(self.freq_bins - 1);
-            for frame in frames_l.iter() {
-                let v = frame.get(bin).copied().unwrap_or(self.min_db);
-                let t = ((v - self.min_db) / (self.max_db - self.min_db)).clamp(0.0, 1.0);
-                let color = self.colormap.color(t);
-                pixels_l.extend_from_slice(&[color.r(), color.g(), color.b()]);
-            }
-            for frame in frames_r.iter() {
-                let v = frame.get(bin).copied().unwrap_or(self.min_db);
-                let t = ((v - self.min_db) / (self.max_db - self.min_db)).clamp(0.0, 1.0);
-                let color = self.colormap.color(t);
-                pixels_r.extend_from_slice(&[color.r(), color.g(), color.b()]);
-            }
-        }
 
-        let tex_options = if self.interpolate {
-            egui::TextureOptions::LINEAR
-        } else {
-            egui::TextureOptions::NEAREST
-        };
-
-        if width > 0 {
-            let size = [width, display_bins];
-            let image_l = egui::ColorImage::from_rgb(size, &pixels_l);
-            self.tex_l = Some(ctx.load_texture("spec_l", image_l, tex_options));
-            let image_r = egui::ColorImage::from_rgb(size, &pixels_r);
-            self.tex_r = Some(ctx.load_texture("spec_r", image_r, tex_options));
+            let image_l = egui::ColorImage {
+                size: [width, display_bins],
+                pixels: flat_l,
+            };
+            if let Some(tex) = &mut self.tex_l {
+                tex.set(image_l, tex_options);
+            } else {
+                self.tex_l = Some(ctx.load_texture("spec_l", image_l, tex_options));
+            }
+            let image_r = egui::ColorImage {
+                size: [width, display_bins],
+                pixels: flat_r,
+            };
+            if let Some(tex) = &mut self.tex_r {
+                tex.set(image_r, tex_options);
+            } else {
+                self.tex_r = Some(ctx.load_texture("spec_r", image_r, tex_options));
+            }
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
