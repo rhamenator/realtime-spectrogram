@@ -289,10 +289,8 @@ class MainWindow(QtWidgets.QMainWindow):
             plot.setTitle(f"{'Left' if plot == self.plot_L_spec else 'Right'} Channel Spectrogram"); plot.setLabel('left', 'Frequency', units='Hz'); plot.setLabel('bottom', 'Time', units='s')
             plot.setLogMode(x=False, y=is_log_scale); y_min_plot = np.log10(safe_plot_freq_min) if is_log_scale else plot_freq_min; y_max_plot = np.log10(plot_freq_max) if is_log_scale else plot_freq_max
             plot.setYRange(y_min_plot, y_max_plot); plot.setXRange(-HISTORY_SECONDS, 0)
-            tr = QtGui.QTransform(); freq_span_plot = y_max_plot - y_min_plot; time_span = HISTORY_SECONDS
-            if self.history_frames_actual > 0 and len(self.freq_vector) > 0 and time_span > 0 and freq_span_plot > 0:
-                tr.scale(time_span / self.history_frames_actual, freq_span_plot / len(self.freq_vector))
-                tr.translate(-HISTORY_SECONDS, y_min_plot)
+            tr = QtGui.QTransform(); freq_span_plot = y_max_plot - y_min_plot; time_span = HISTORY_SECONDS; tr.translate(-HISTORY_SECONDS, y_min_plot)
+            if self.history_frames_actual > 0 and len(self.freq_vector) > 0 and time_span > 0 and freq_span_plot > 0: tr.scale(time_span / self.history_frames_actual, freq_span_plot / len(self.freq_vector))
             else: self.print_verbose("Warning: Cannot set image transform.")
             img.setTransform(tr); gradient_item = hist.gradient; gradient_item.setColorMap(cmap); hist.setLevels(self.current_spec_db_min, self.current_spec_db_max)
         self.plot_freq_resp.setTitle("Instantaneous Frequency Response"); self.plot_freq_resp.setLabel('left', 'Magnitude', units='dBFS');
