@@ -210,6 +210,10 @@ struct SpectrogramApp {
     max_db: f32,
     colormap: ColorMap,
     interpolate: bool,
+    show_config: bool,
+    freq_min: f32,
+    freq_max: f32,
+    log_freq: bool,
 }
 
 impl SpectrogramApp {
@@ -236,6 +240,10 @@ impl SpectrogramApp {
             max_db: 0.0,
             colormap: ColorMap::default(),
             interpolate: true,
+            show_config: false,
+            freq_min: 20.0,
+            freq_max: sample_rate as f32 / 2.0,
+            log_freq: false,
         }
     }
 
@@ -296,38 +304,71 @@ impl eframe::App for SpectrogramApp {
                 }
 
                 ui.separator();
-
-                ui.add_enabled_ui(self.running_flag.is_none(), |ui| {
-                    ui.label("Sample Rate:");
-                    ui.add(egui::DragValue::new(&mut self.sample_rate).clamp_range(8000..=96000));
-                    ui.label("Chunk:");
-                    ui.add(egui::DragValue::new(&mut self.chunk).clamp_range(256..=8192));
-                });
-
-                ui.separator();
-                ui.label("Min dB:");
-                ui.add(egui::DragValue::new(&mut self.min_db));
-                ui.label("Max dB:");
-                ui.add(egui::DragValue::new(&mut self.max_db));
-
-                egui::ComboBox::from_id_source("colormap")
-                    .selected_text(self.colormap.as_str())
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.colormap,
-                            ColorMap::BlueRed,
-                            ColorMap::BlueRed.as_str(),
-                        );
-                        ui.selectable_value(
-                            &mut self.colormap,
-                            ColorMap::Grayscale,
-                            ColorMap::Grayscale.as_str(),
-                        );
-                    });
-
-                ui.checkbox(&mut self.interpolate, "Interpolate");
+                if ui.button("Settings").clicked() {
+                    self.show_config = true;
+                }
             });
         });
+
+        if self.show_config {
+            let mut open = self.show_config;
+            egui::Window::new("Settings")
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.add_enabled_ui(self.running_flag.is_none(), |ui| {
+                        ui.label("Sample Rate:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.sample_rate)
+                                .clamp_range(8000..=96000),
+                        );
+                        ui.label("Chunk:");
+                        ui.add(
+                            egui::DragValue::new(&mut self.chunk)
+                                .clamp_range(256..=8192),
+                        );
+                    });
+                    ui.separator();
+                    ui.label("Min dB:");
+                    ui.add(egui::DragValue::new(&mut self.min_db));
+                    ui.label("Max dB:");
+                    ui.add(egui::DragValue::new(&mut self.max_db));
+                    ui.separator();
+                    ui.label("Freq min (Hz):");
+                    ui.add(
+                        egui::DragValue::new(&mut self.freq_min)
+                            .clamp_range(0.0..=self.sample_rate as f64 / 2.0),
+                    );
+                    ui.label("Freq max (Hz):");
+                    ui.add(
+                        egui::DragValue::new(&mut self.freq_max)
+                            .clamp_range(0.0..=self.sample_rate as f64 / 2.0),
+                    );
+                    ui.checkbox(&mut self.log_freq, "Log frequency scale");
+                    ui.separator();
+                    egui::ComboBox::from_id_source("colormap")
+                        .selected_text(self.colormap.as_str())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.colormap,
+                                ColorMap::BlueRed,
+                                ColorMap::BlueRed.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut self.colormap,
+                                ColorMap::Grayscale,
+                                ColorMap::Grayscale.as_str(),
+                            );
+                        });
+                    ui.checkbox(&mut self.interpolate, "Interpolate");
+                    if ui.button("Apply").clicked() {
+                        if self.running_flag.is_some() {
+                            self.stop_audio();
+                            self.start_audio();
+                        }
+                    }
+                });
+            self.show_config = open;
+        }
 
         while let Ok((left, right)) = self.rx.try_recv() {
             if self.history_l.len() >= self.max_frames {
@@ -338,17 +379,40 @@ impl eframe::App for SpectrogramApp {
             self.history_r.push(right);
         }
 
+        // ensure a consistent width regardless of current history length
+        let pad = self.max_frames.saturating_sub(self.history_l.len());
+        let empty_frame = vec![self.min_db; self.freq_bins];
+        let mut frames_l: Vec<Vec<f32>> = vec![empty_frame.clone(); pad];
+        frames_l.extend(self.history_l.clone());
+        let mut frames_r: Vec<Vec<f32>> = vec![empty_frame.clone(); pad];
+        frames_r.extend(self.history_r.clone());
+
         let mut pixels_l: Vec<u8> = Vec::new();
         let mut pixels_r: Vec<u8> = Vec::new();
-        for y in (0..self.freq_bins).rev() {
-            for frame in &self.history_l {
-                let v = frame.get(y).copied().unwrap_or(self.min_db);
+        let display_bins = self.freq_bins;
+        let freq_min = self.freq_min.max(0.0);
+        let freq_max = self.freq_max.min(self.sample_rate as f32 / 2.0);
+        for y in (0..display_bins).rev() {
+            let frac = y as f32 / (display_bins - 1) as f32;
+            let freq = if self.log_freq {
+                if freq_min <= 0.0 {
+                    0.0
+                } else {
+                    freq_min * (freq_max / freq_min).powf(frac)
+                }
+            } else {
+                freq_min + frac * (freq_max - freq_min)
+            };
+            let bin = (((freq / self.sample_rate as f32) * self.chunk as f32).round() as usize)
+                .min(self.freq_bins - 1);
+            for frame in &frames_l {
+                let v = frame.get(bin).copied().unwrap_or(self.min_db);
                 let t = ((v - self.min_db) / (self.max_db - self.min_db)).clamp(0.0, 1.0);
                 let color = self.colormap.color(t);
                 pixels_l.extend_from_slice(&[color.r(), color.g(), color.b()]);
             }
-            for frame in &self.history_r {
-                let v = frame.get(y).copied().unwrap_or(self.min_db);
+            for frame in &frames_r {
+                let v = frame.get(bin).copied().unwrap_or(self.min_db);
                 let t = ((v - self.min_db) / (self.max_db - self.min_db)).clamp(0.0, 1.0);
                 let color = self.colormap.color(t);
                 pixels_r.extend_from_slice(&[color.r(), color.g(), color.b()]);
@@ -362,7 +426,7 @@ impl eframe::App for SpectrogramApp {
         };
 
         if !pixels_l.is_empty() {
-            let size = [self.history_l.len(), self.freq_bins];
+            let size = [self.max_frames, display_bins];
             let image = egui::ColorImage::from_rgb(size, &pixels_l);
             let tex = self.tex_l.get_or_insert_with(|| {
                 ctx.load_texture("spec_l", image.clone(), tex_options)
@@ -370,7 +434,7 @@ impl eframe::App for SpectrogramApp {
             tex.set(image, tex_options);
         }
         if !pixels_r.is_empty() {
-            let size = [self.history_r.len(), self.freq_bins];
+            let size = [self.max_frames, display_bins];
             let image = egui::ColorImage::from_rgb(size, &pixels_r);
             let tex = self.tex_r.get_or_insert_with(|| {
                 ctx.load_texture("spec_r", image.clone(), tex_options)
