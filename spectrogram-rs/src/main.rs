@@ -345,7 +345,6 @@ impl eframe::App for SpectrogramApp {
                 }
             });
         });
-
         if self.show_config {
             let mut open = self.show_config;
             egui::Window::new("Settings")
@@ -419,10 +418,10 @@ impl eframe::App for SpectrogramApp {
             self.history_r.push(right);
         }
 
+
         let frames_l = &self.history_l;
         let frames_r = &self.history_r;
         let width = frames_l.len();
-
         let mut pixels_l: Vec<u8> = Vec::new();
         let mut pixels_r: Vec<u8> = Vec::new();
         let display_bins = self.freq_bins;
