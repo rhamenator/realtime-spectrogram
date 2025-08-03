@@ -11,6 +11,8 @@ use std::time::Duration;
 
 use eframe::egui;
 
+const HISTORY_SECONDS: f32 = 10.0;
+
 #[derive(Parser, Debug)]
 #[command(name = "spectrogram-rs", about = "Realtime audio spectrogram")]
 struct Args {
@@ -225,7 +227,7 @@ impl SpectrogramApp {
             handle: Some(handle),
             history_l: Vec::new(),
             history_r: Vec::new(),
-            max_frames: 200,
+            max_frames: ((HISTORY_SECONDS * sample_rate as f32) / chunk as f32).ceil() as usize,
             freq_bins: chunk / 2 + 1,
             tex_l: None,
             tex_r: None,
@@ -251,6 +253,7 @@ impl SpectrogramApp {
         self.running_flag = Some(running);
         self.handle = Some(handle);
         self.freq_bins = chunk / 2 + 1;
+        self.max_frames = ((HISTORY_SECONDS * self.sample_rate as f32) / self.chunk as f32).ceil() as usize;
         self.history_l.clear();
         self.history_r.clear();
         self.tex_l = None;
