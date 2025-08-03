@@ -4,7 +4,7 @@ use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, StreamConfig};
 use num_complex::Complex32;
-use rustfft::FftPlanner;
+use rustfft::{Fft, FftPlanner};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -12,6 +12,32 @@ use std::time::Duration;
 use eframe::egui;
 
 const HISTORY_SECONDS: f32 = 10.0;
+
+struct FftHelper {
+    planner: FftPlanner<f32>,
+    fft: Arc<dyn Fft<f32>>,
+    buffer: Vec<Complex32>,
+}
+
+impl FftHelper {
+    fn new(size: usize) -> Self {
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(size);
+        let buffer = vec![Complex32::new(0.0, 0.0); size];
+        Self {
+            planner,
+            fft,
+            buffer,
+        }
+    }
+
+    fn ensure_size(&mut self, size: usize) {
+        if self.buffer.len() != size {
+            self.fft = self.planner.plan_fft_forward(size);
+            self.buffer.resize(size, Complex32::new(0.0, 0.0));
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "spectrogram-rs", about = "Realtime audio spectrogram")]
@@ -44,7 +70,6 @@ fn audio_thread(
     tx: mpsc::Sender<(Vec<f32>, Vec<f32>)>,
     running: Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<()> {
-
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -65,42 +90,62 @@ fn audio_thread(
     let buffer_r = Arc::new(Mutex::new(Vec::<f32>::new()));
     let buf_l = buffer_l.clone();
     let buf_r = buffer_r.clone();
+    let fft = Arc::new(Mutex::new(FftHelper::new(chunk)));
 
     let err_fn = |err| eprintln!("Stream error: {}", err);
 
     let channels = stream_config.channels as usize;
 
     let stream = match sample_format {
-        SampleFormat::F32 => device.build_input_stream(
-            &stream_config,
-            move |data: &[f32], _| {
-                handle_input(data, channels, &buf_l, &buf_r, chunk, &tx);
-            },
-            err_fn,
-            None,
-        )?,
-        SampleFormat::I16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[i16], _| {
-                let data_f32: Vec<f32> = data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
-                handle_input(&data_f32, channels, &buf_l, &buf_r, chunk, &tx);
-            },
-            err_fn,
-            None,
-        )?,
-        SampleFormat::U16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[u16], _| {
-                let data_f32: Vec<f32> = data
-                    .iter()
-                    .map(|&s| s as f32 / u16::MAX as f32 - 0.5)
-                    .collect();
+        SampleFormat::F32 => {
+            let fft = fft.clone();
+            let buf_l = buf_l.clone();
+            let buf_r = buf_r.clone();
+            let tx = tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[f32], _| {
+                    handle_input(data, channels, &buf_l, &buf_r, chunk, &tx, &fft);
+                },
+                err_fn,
+                None,
+            )?
+        }
+        SampleFormat::I16 => {
+            let fft = fft.clone();
+            let buf_l = buf_l.clone();
+            let buf_r = buf_r.clone();
+            let tx = tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[i16], _| {
+                    let data_f32: Vec<f32> =
+                        data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                    handle_input(&data_f32, channels, &buf_l, &buf_r, chunk, &tx, &fft);
+                },
+                err_fn,
+                None,
+            )?
+        }
+        SampleFormat::U16 => {
+            let fft = fft.clone();
+            let buf_l = buf_l.clone();
+            let buf_r = buf_r.clone();
+            let tx = tx.clone();
+            device.build_input_stream(
+                &stream_config,
+                move |data: &[u16], _| {
+                    let data_f32: Vec<f32> = data
+                        .iter()
+                        .map(|&s| s as f32 / u16::MAX as f32 - 0.5)
+                        .collect();
 
-                handle_input(&data_f32, channels, &buf_l, &buf_r, chunk, &tx);
-            },
-            err_fn,
-            None,
-        )?,
+                    handle_input(&data_f32, channels, &buf_l, &buf_r, chunk, &tx, &fft);
+                },
+                err_fn,
+                None,
+            )?
+        }
         _ => return Err(anyhow::anyhow!("Unsupported sample format")),
     };
 
@@ -119,6 +164,7 @@ fn handle_input(
     buf_r: &Arc<Mutex<Vec<f32>>>,
     chunk: usize,
     tx: &mpsc::Sender<(Vec<f32>, Vec<f32>)>,
+    fft: &Arc<Mutex<FftHelper>>,
 ) {
     let mut left = buf_l.lock().unwrap();
     let mut right = buf_r.lock().unwrap();
@@ -137,23 +183,22 @@ fn handle_input(
     while left.len() >= chunk && right.len() >= chunk {
         let frame_l: Vec<f32> = left.drain(..chunk).collect();
         let frame_r: Vec<f32> = right.drain(..chunk).collect();
-        let db_l = compute_fft_db(&frame_l);
-        let db_r = compute_fft_db(&frame_r);
+        let mut fft = fft.lock().unwrap();
+        let db_l = compute_fft_db(&frame_l, &mut fft);
+        let db_r = compute_fft_db(&frame_r, &mut fft);
         if tx.send((db_l, db_r)).is_err() {
             return;
         }
     }
 }
-
-fn compute_fft_db(samples: &[f32]) -> Vec<f32> {
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(samples.len());
-    let mut buffer: Vec<Complex32> = samples
-        .iter()
-        .map(|&s| Complex32 { re: s, im: 0.0 })
-        .collect();
-    fft.process(&mut buffer);
-    buffer
+fn compute_fft_db(samples: &[f32], fft: &mut FftHelper) -> Vec<f32> {
+    fft.ensure_size(samples.len());
+    for (b, &s) in fft.buffer.iter_mut().zip(samples.iter()) {
+        b.re = s;
+        b.im = 0.0;
+    }
+    fft.fft.process(&mut fft.buffer);
+    fft.buffer
         .iter()
         .take(samples.len() / 2 + 1)
         .map(|c| 20.0 * c.norm().max(1e-6).log10())
@@ -299,7 +344,8 @@ impl SpectrogramApp {
         self.running_flag = Some(running);
         self.handle = Some(handle);
         self.freq_bins = chunk / 2 + 1;
-        self.max_frames = ((HISTORY_SECONDS * self.sample_rate as f32) / self.chunk as f32).ceil() as usize;
+        self.max_frames =
+            ((HISTORY_SECONDS * self.sample_rate as f32) / self.chunk as f32).ceil() as usize;
         self.history_l.clear();
         self.history_r.clear();
         self.tex_l = None;
@@ -355,7 +401,9 @@ impl eframe::App for SpectrogramApp {
                         egui::ComboBox::from_id_source("sample_rate")
                             .selected_text(self.sample_rate.to_string())
                             .show_ui(ui, |ui| {
-                                for &sr in [8000, 16000, 22050, 32000, 44100, 48000, 88200, 96000].iter() {
+                                for &sr in
+                                    [8000, 16000, 22050, 32000, 44100, 48000, 88200, 96000].iter()
+                                {
                                     ui.selectable_value(&mut self.sample_rate, sr, sr.to_string());
                                 }
                             });
@@ -389,14 +437,46 @@ impl eframe::App for SpectrogramApp {
                     egui::ComboBox::from_id_source("colormap")
                         .selected_text(self.colormap.as_str())
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.colormap, ColorMap::BlueRed, ColorMap::BlueRed.as_str());
-                            ui.selectable_value(&mut self.colormap, ColorMap::Grayscale, ColorMap::Grayscale.as_str());
-                            ui.selectable_value(&mut self.colormap, ColorMap::Viridis, ColorMap::Viridis.as_str());
-                            ui.selectable_value(&mut self.colormap, ColorMap::Plasma, ColorMap::Plasma.as_str());
-                            ui.selectable_value(&mut self.colormap, ColorMap::Inferno, ColorMap::Inferno.as_str());
-                            ui.selectable_value(&mut self.colormap, ColorMap::Magma, ColorMap::Magma.as_str());
-                            ui.selectable_value(&mut self.colormap, ColorMap::Cividis, ColorMap::Cividis.as_str());
-                            ui.selectable_value(&mut self.colormap, ColorMap::Turbo, ColorMap::Turbo.as_str());
+                            ui.selectable_value(
+                                &mut self.colormap,
+                                ColorMap::BlueRed,
+                                ColorMap::BlueRed.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut self.colormap,
+                                ColorMap::Grayscale,
+                                ColorMap::Grayscale.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut self.colormap,
+                                ColorMap::Viridis,
+                                ColorMap::Viridis.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut self.colormap,
+                                ColorMap::Plasma,
+                                ColorMap::Plasma.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut self.colormap,
+                                ColorMap::Inferno,
+                                ColorMap::Inferno.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut self.colormap,
+                                ColorMap::Magma,
+                                ColorMap::Magma.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut self.colormap,
+                                ColorMap::Cividis,
+                                ColorMap::Cividis.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut self.colormap,
+                                ColorMap::Turbo,
+                                ColorMap::Turbo.as_str(),
+                            );
                         });
                     ui.checkbox(&mut self.interpolate, "Interpolate");
                     if ui.button("Apply").clicked() {
@@ -417,7 +497,6 @@ impl eframe::App for SpectrogramApp {
             self.history_l.push(left);
             self.history_r.push(right);
         }
-
 
         let frames_l = &self.history_l;
         let frames_r = &self.history_r;
