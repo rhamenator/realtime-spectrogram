@@ -164,6 +164,12 @@ fn compute_fft_db(samples: &[f32]) -> Vec<f32> {
 enum ColorMap {
     BlueRed,
     Grayscale,
+    Viridis,
+    Plasma,
+    Inferno,
+    Magma,
+    Cividis,
+    Turbo,
 }
 
 impl ColorMap {
@@ -171,6 +177,12 @@ impl ColorMap {
         match self {
             ColorMap::BlueRed => "Blue/Red",
             ColorMap::Grayscale => "Grayscale",
+            ColorMap::Viridis => "viridis",
+            ColorMap::Plasma => "plasma",
+            ColorMap::Inferno => "inferno",
+            ColorMap::Magma => "magma",
+            ColorMap::Cividis => "cividis",
+            ColorMap::Turbo => "turbo",
         }
     }
 
@@ -184,13 +196,37 @@ impl ColorMap {
                 let v = (t * 255.0) as u8;
                 egui::Color32::from_gray(v)
             }
+            ColorMap::Viridis => {
+                let [r, g, b, _] = colorgrad::viridis().at(t as f64).to_rgba8();
+                egui::Color32::from_rgb(r, g, b)
+            }
+            ColorMap::Plasma => {
+                let [r, g, b, _] = colorgrad::plasma().at(t as f64).to_rgba8();
+                egui::Color32::from_rgb(r, g, b)
+            }
+            ColorMap::Inferno => {
+                let [r, g, b, _] = colorgrad::inferno().at(t as f64).to_rgba8();
+                egui::Color32::from_rgb(r, g, b)
+            }
+            ColorMap::Magma => {
+                let [r, g, b, _] = colorgrad::magma().at(t as f64).to_rgba8();
+                egui::Color32::from_rgb(r, g, b)
+            }
+            ColorMap::Cividis => {
+                let [r, g, b, _] = colorgrad::cividis().at(t as f64).to_rgba8();
+                egui::Color32::from_rgb(r, g, b)
+            }
+            ColorMap::Turbo => {
+                let [r, g, b, _] = colorgrad::turbo().at(t as f64).to_rgba8();
+                egui::Color32::from_rgb(r, g, b)
+            }
         }
     }
 }
 
 impl Default for ColorMap {
     fn default() -> Self {
-        Self::BlueRed
+        Self::Viridis
     }
 }
 
@@ -309,7 +345,6 @@ impl eframe::App for SpectrogramApp {
                 }
             });
         });
-
         if self.show_config {
             let mut open = self.show_config;
             egui::Window::new("Settings")
@@ -317,15 +352,21 @@ impl eframe::App for SpectrogramApp {
                 .show(ctx, |ui| {
                     ui.add_enabled_ui(self.running_flag.is_none(), |ui| {
                         ui.label("Sample Rate:");
-                        ui.add(
-                            egui::DragValue::new(&mut self.sample_rate)
-                                .clamp_range(8000..=96000),
-                        );
+                        egui::ComboBox::from_id_source("sample_rate")
+                            .selected_text(self.sample_rate.to_string())
+                            .show_ui(ui, |ui| {
+                                for &sr in [8000, 16000, 22050, 32000, 44100, 48000, 88200, 96000].iter() {
+                                    ui.selectable_value(&mut self.sample_rate, sr, sr.to_string());
+                                }
+                            });
                         ui.label("Chunk:");
-                        ui.add(
-                            egui::DragValue::new(&mut self.chunk)
-                                .clamp_range(256..=8192),
-                        );
+                        egui::ComboBox::from_id_source("chunk")
+                            .selected_text(self.chunk.to_string())
+                            .show_ui(ui, |ui| {
+                                for &c in [256, 512, 1024, 2048, 4096, 8192].iter() {
+                                    ui.selectable_value(&mut self.chunk, c, c.to_string());
+                                }
+                            });
                     });
                     ui.separator();
                     ui.label("Min dB:");
@@ -348,16 +389,14 @@ impl eframe::App for SpectrogramApp {
                     egui::ComboBox::from_id_source("colormap")
                         .selected_text(self.colormap.as_str())
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.colormap,
-                                ColorMap::BlueRed,
-                                ColorMap::BlueRed.as_str(),
-                            );
-                            ui.selectable_value(
-                                &mut self.colormap,
-                                ColorMap::Grayscale,
-                                ColorMap::Grayscale.as_str(),
-                            );
+                            ui.selectable_value(&mut self.colormap, ColorMap::BlueRed, ColorMap::BlueRed.as_str());
+                            ui.selectable_value(&mut self.colormap, ColorMap::Grayscale, ColorMap::Grayscale.as_str());
+                            ui.selectable_value(&mut self.colormap, ColorMap::Viridis, ColorMap::Viridis.as_str());
+                            ui.selectable_value(&mut self.colormap, ColorMap::Plasma, ColorMap::Plasma.as_str());
+                            ui.selectable_value(&mut self.colormap, ColorMap::Inferno, ColorMap::Inferno.as_str());
+                            ui.selectable_value(&mut self.colormap, ColorMap::Magma, ColorMap::Magma.as_str());
+                            ui.selectable_value(&mut self.colormap, ColorMap::Cividis, ColorMap::Cividis.as_str());
+                            ui.selectable_value(&mut self.colormap, ColorMap::Turbo, ColorMap::Turbo.as_str());
                         });
                     ui.checkbox(&mut self.interpolate, "Interpolate");
                     if ui.button("Apply").clicked() {
@@ -379,14 +418,10 @@ impl eframe::App for SpectrogramApp {
             self.history_r.push(right);
         }
 
-        // ensure a consistent width regardless of current history length
-        let pad = self.max_frames.saturating_sub(self.history_l.len());
-        let empty_frame = vec![self.min_db; self.freq_bins];
-        let mut frames_l: Vec<Vec<f32>> = vec![empty_frame.clone(); pad];
-        frames_l.extend(self.history_l.clone());
-        let mut frames_r: Vec<Vec<f32>> = vec![empty_frame.clone(); pad];
-        frames_r.extend(self.history_r.clone());
 
+        let frames_l = &self.history_l;
+        let frames_r = &self.history_r;
+        let width = frames_l.len();
         let mut pixels_l: Vec<u8> = Vec::new();
         let mut pixels_r: Vec<u8> = Vec::new();
         let display_bins = self.freq_bins;
@@ -405,13 +440,13 @@ impl eframe::App for SpectrogramApp {
             };
             let bin = (((freq / self.sample_rate as f32) * self.chunk as f32).round() as usize)
                 .min(self.freq_bins - 1);
-            for frame in &frames_l {
+            for frame in frames_l.iter() {
                 let v = frame.get(bin).copied().unwrap_or(self.min_db);
                 let t = ((v - self.min_db) / (self.max_db - self.min_db)).clamp(0.0, 1.0);
                 let color = self.colormap.color(t);
                 pixels_l.extend_from_slice(&[color.r(), color.g(), color.b()]);
             }
-            for frame in &frames_r {
+            for frame in frames_r.iter() {
                 let v = frame.get(bin).copied().unwrap_or(self.min_db);
                 let t = ((v - self.min_db) / (self.max_db - self.min_db)).clamp(0.0, 1.0);
                 let color = self.colormap.color(t);
@@ -425,21 +460,12 @@ impl eframe::App for SpectrogramApp {
             egui::TextureOptions::NEAREST
         };
 
-        if !pixels_l.is_empty() {
-            let size = [self.max_frames, display_bins];
-            let image = egui::ColorImage::from_rgb(size, &pixels_l);
-            let tex = self.tex_l.get_or_insert_with(|| {
-                ctx.load_texture("spec_l", image.clone(), tex_options)
-            });
-            tex.set(image, tex_options);
-        }
-        if !pixels_r.is_empty() {
-            let size = [self.max_frames, display_bins];
-            let image = egui::ColorImage::from_rgb(size, &pixels_r);
-            let tex = self.tex_r.get_or_insert_with(|| {
-                ctx.load_texture("spec_r", image.clone(), tex_options)
-            });
-            tex.set(image, tex_options);
+        if width > 0 {
+            let size = [width, display_bins];
+            let image_l = egui::ColorImage::from_rgb(size, &pixels_l);
+            self.tex_l = Some(ctx.load_texture("spec_l", image_l, tex_options));
+            let image_r = egui::ColorImage::from_rgb(size, &pixels_r);
+            self.tex_r = Some(ctx.load_texture("spec_r", image_r, tex_options));
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
