@@ -209,6 +209,7 @@ struct SpectrogramApp {
     min_db: f32,
     max_db: f32,
     colormap: ColorMap,
+    interpolate: bool,
 }
 
 impl SpectrogramApp {
@@ -234,6 +235,7 @@ impl SpectrogramApp {
             min_db: -90.0,
             max_db: 0.0,
             colormap: ColorMap::default(),
+            interpolate: true,
         }
     }
 
@@ -322,6 +324,8 @@ impl eframe::App for SpectrogramApp {
                             ColorMap::Grayscale.as_str(),
                         );
                     });
+
+                ui.checkbox(&mut self.interpolate, "Interpolate");
             });
         });
 
@@ -351,21 +355,27 @@ impl eframe::App for SpectrogramApp {
             }
         }
 
+        let tex_options = if self.interpolate {
+            egui::TextureOptions::LINEAR
+        } else {
+            egui::TextureOptions::NEAREST
+        };
+
         if !pixels_l.is_empty() {
             let size = [self.history_l.len(), self.freq_bins];
             let image = egui::ColorImage::from_rgb(size, &pixels_l);
             let tex = self.tex_l.get_or_insert_with(|| {
-                ctx.load_texture("spec_l", image.clone(), Default::default())
+                ctx.load_texture("spec_l", image.clone(), tex_options)
             });
-            tex.set(image, Default::default());
+            tex.set(image, tex_options);
         }
         if !pixels_r.is_empty() {
             let size = [self.history_r.len(), self.freq_bins];
             let image = egui::ColorImage::from_rgb(size, &pixels_r);
             let tex = self.tex_r.get_or_insert_with(|| {
-                ctx.load_texture("spec_r", image.clone(), Default::default())
+                ctx.load_texture("spec_r", image.clone(), tex_options)
             });
-            tex.set(image, Default::default());
+            tex.set(image, tex_options);
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
