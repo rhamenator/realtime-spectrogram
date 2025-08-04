@@ -66,12 +66,15 @@ fn main() -> anyhow::Result<()> {
 fn audio_thread(
     sample_rate: u32,
     chunk: usize,
+    device_name: String,
     tx: mpsc::Sender<(Vec<f32>, Vec<f32>)>,
     running: Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<()> {
     let host = cpal::default_host();
     let device = host
-        .default_output_device()
+        .output_devices()?
+        .find(|d| d.name().map(|n| n == device_name).unwrap_or(false))
+        .or_else(|| host.default_output_device())
         .ok_or_else(|| anyhow::anyhow!("No output device"))?;
     let config = device.default_output_config()?;
     let sample_format = config.sample_format();
@@ -304,15 +307,28 @@ struct SpectrogramApp {
     freq_min: f32,
     freq_max: f32,
     log_freq: bool,
+    devices: Vec<String>,
+    selected_device: String,
 }
 
 impl SpectrogramApp {
     fn new(_cc: &eframe::CreationContext<'_>, sample_rate: u32, chunk: usize) -> Self {
+        let host = cpal::default_host();
+        let devices: Vec<String> = host
+            .output_devices()
+            .map(|ds| ds.filter_map(|d| d.name().ok()).collect())
+            .unwrap_or_default();
+        let default_device = host
+            .default_output_device()
+            .and_then(|d| d.name().ok())
+            .unwrap_or_else(|| devices.get(0).cloned().unwrap_or_default());
+
         let (tx, rx) = mpsc::channel();
         let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let run_clone = running.clone();
+        let device_name = default_device.clone();
         let handle = thread::spawn(move || {
-            let _ = audio_thread(sample_rate, chunk, tx, run_clone);
+            let _ = audio_thread(sample_rate, chunk, device_name, tx, run_clone);
         });
         Self {
             rx,
@@ -336,6 +352,8 @@ impl SpectrogramApp {
             freq_min: 20.0,
             freq_max: sample_rate as f32 / 2.0,
             log_freq: false,
+            devices,
+            selected_device: default_device,
         }
     }
 
@@ -375,8 +393,9 @@ impl SpectrogramApp {
         let run_clone = running.clone();
         let sample_rate = self.sample_rate;
         let chunk = self.chunk;
+        let device_name = self.selected_device.clone();
         let handle = thread::spawn(move || {
-            let _ = audio_thread(sample_rate, chunk, tx, run_clone);
+            let _ = audio_thread(sample_rate, chunk, device_name, tx, run_clone);
         });
         self.rx = rx;
         self.running_flag = Some(running);
@@ -450,6 +469,14 @@ impl eframe::App for SpectrogramApp {
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.add_enabled_ui(self.running_flag.is_none(), |ui| {
+                        ui.label("Device:");
+                        egui::ComboBox::from_id_source("device")
+                            .selected_text(&self.selected_device)
+                            .show_ui(ui, |ui| {
+                                for d in &self.devices {
+                                    ui.selectable_value(&mut self.selected_device, d.clone(), d);
+                                }
+                            });
                         ui.label("Sample Rate:");
                         egui::ComboBox::from_id_source("sample_rate")
                             .selected_text(self.sample_rate.to_string())
