@@ -618,6 +618,9 @@ impl eframe::App for SpectrogramApp {
             }
         });
 
-        ctx.request_repaint();
+        if updated {
+            ctx.request_repaint();
+        }
+        ctx.request_repaint_after(Duration::from_millis(16));
     }
 }
