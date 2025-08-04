@@ -12,8 +12,6 @@ use std::time::Duration;
 
 use eframe::egui;
 
-const HISTORY_SECONDS: f32 = 10.0;
-
 struct FftHelper {
     planner: FftPlanner<f32>,
     fft: Arc<dyn Fft<f32>>,
@@ -288,9 +286,10 @@ struct SpectrogramApp {
     chunk: usize,
     running_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
     handle: Option<std::thread::JoinHandle<()>>,
-    history_l: Vec<Vec<f32>>,
-    history_r: Vec<Vec<f32>>,
-    max_frames: usize,
+    history_l: VecDeque<Vec<f32>>,
+    history_r: VecDeque<Vec<f32>>,
+    /// Maximum number of columns to keep; matches display width
+    max_columns: usize,
     freq_bins: usize,
     tex_l: Option<egui::TextureHandle>,
     tex_r: Option<egui::TextureHandle>,
@@ -321,9 +320,9 @@ impl SpectrogramApp {
             chunk,
             running_flag: Some(running),
             handle: Some(handle),
-            history_l: Vec::new(),
-            history_r: Vec::new(),
-            max_frames: ((HISTORY_SECONDS * sample_rate as f32) / chunk as f32).ceil() as usize,
+            history_l: VecDeque::new(),
+            history_r: VecDeque::new(),
+            max_columns: 0,
             freq_bins: chunk / 2 + 1,
             tex_l: None,
             tex_r: None,
@@ -383,8 +382,7 @@ impl SpectrogramApp {
         self.running_flag = Some(running);
         self.handle = Some(handle);
         self.freq_bins = chunk / 2 + 1;
-        self.max_frames =
-            ((HISTORY_SECONDS * self.sample_rate as f32) / self.chunk as f32).ceil() as usize;
+        self.max_columns = 0;
         self.history_l.clear();
         self.history_r.clear();
         self.pixels_l.clear();
@@ -432,6 +430,20 @@ impl eframe::App for SpectrogramApp {
                 }
             });
         });
+
+        // Determine maximum history width based on available pixels
+        let available_rect = ctx.available_rect();
+        let target_width = available_rect.width().max(1.0).round() as usize;
+        if target_width != self.max_columns {
+            self.max_columns = target_width;
+        }
+
+        while self.pixels_l.len() > self.max_columns {
+            self.pixels_l.pop_front();
+            self.pixels_r.pop_front();
+            self.history_l.pop_front();
+            self.history_r.pop_front();
+        }
         if self.show_config {
             let mut open = self.show_config;
             egui::Window::new("Settings")
@@ -532,18 +544,18 @@ impl eframe::App for SpectrogramApp {
 
         let mut updated = false;
         while let Ok((left, right)) = self.rx.try_recv() {
-            if self.history_l.len() >= self.max_frames {
-                self.history_l.remove(0);
-                self.history_r.remove(0);
-                self.pixels_l.pop_front();
-                self.pixels_r.pop_front();
-            }
             let col_l = self.frame_to_column(&left);
             let col_r = self.frame_to_column(&right);
             self.pixels_l.push_back(col_l);
             self.pixels_r.push_back(col_r);
-            self.history_l.push(left);
-            self.history_r.push(right);
+            self.history_l.push_back(left);
+            self.history_r.push_back(right);
+            if self.pixels_l.len() > self.max_columns {
+                self.pixels_l.pop_front();
+                self.pixels_r.pop_front();
+                self.history_l.pop_front();
+                self.history_r.pop_front();
+            }
             updated = true;
         }
 
