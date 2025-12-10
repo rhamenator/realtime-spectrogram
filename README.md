@@ -29,7 +29,7 @@ This repository provides two implementations:
 
 #### Requirements
 
-- Python 3.7 or higher
+- Python 3.8 or higher (PyQt6 requirement)
 - Audio loopback device (varies by platform - see Platform-Specific Setup below)
 
 #### Dependencies
@@ -64,7 +64,7 @@ pythonw realtime_spectrogram.pyw
 
 #### Requirements
 
-- Rust 1.70 or higher (install from [rust-lang.org](https://www.rust-lang.org/))
+- Rust 1.56 or higher (edition 2021, install from [rust-lang.org](https://www.rust-lang.org/))
 - Audio loopback device
 
 #### Building
