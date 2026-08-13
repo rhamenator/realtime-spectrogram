@@ -213,10 +213,11 @@ fn compute_fft_db(samples: &[f32], fft: &mut FftHelper) -> Vec<f32> {
         .collect()
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Default, PartialEq)]
 enum ColorMap {
     BlueRed,
     Grayscale,
+    #[default]
     Viridis,
     Plasma,
     Inferno,
@@ -277,12 +278,6 @@ impl ColorMap {
     }
 }
 
-impl Default for ColorMap {
-    fn default() -> Self {
-        Self::Viridis
-    }
-}
-
 struct SpectrogramApp {
     rx: mpsc::Receiver<(Vec<f32>, Vec<f32>)>,
     sample_rate: u32,
@@ -321,7 +316,7 @@ impl SpectrogramApp {
         let default_device = host
             .default_output_device()
             .and_then(|d| d.name().ok())
-            .unwrap_or_else(|| devices.get(0).cloned().unwrap_or_default());
+            .unwrap_or_else(|| devices.first().cloned().unwrap_or_default());
 
         let (tx, rx) = mpsc::channel();
         let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -559,11 +554,9 @@ impl eframe::App for SpectrogramApp {
                             );
                         });
                     ui.checkbox(&mut self.interpolate, "Interpolate");
-                    if ui.button("Apply").clicked() {
-                        if self.running_flag.is_some() {
-                            self.stop_audio();
-                            self.start_audio();
-                        }
+                    if ui.button("Apply").clicked() && self.running_flag.is_some() {
+                        self.stop_audio();
+                        self.start_audio();
                     }
                 });
             self.show_config = open;
@@ -649,5 +642,39 @@ impl eframe::App for SpectrogramApp {
             ctx.request_repaint();
         }
         ctx.request_repaint_after(Duration::from_millis(16));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fft_output_has_expected_bins_and_finite_floor() {
+        let mut helper = FftHelper::new(8);
+        let output = compute_fft_db(&[0.0; 8], &mut helper);
+        assert_eq!(output.len(), 5);
+        assert!(output.iter().all(|value| value.is_finite()));
+        assert!(output.iter().all(|value| *value <= -119.0));
+    }
+
+    #[test]
+    fn fft_helper_resizes_for_new_frame_length() {
+        let mut helper = FftHelper::new(8);
+        assert_eq!(compute_fft_db(&[1.0; 16], &mut helper).len(), 9);
+        assert_eq!(helper.buffer.len(), 16);
+    }
+
+    #[test]
+    fn colormaps_clamp_extreme_inputs() {
+        for map in [
+            ColorMap::BlueRed,
+            ColorMap::Grayscale,
+            ColorMap::Viridis,
+            ColorMap::Turbo,
+        ] {
+            assert_eq!(map.color(-1.0), map.color(0.0));
+            assert_eq!(map.color(2.0), map.color(1.0));
+        }
     }
 }
