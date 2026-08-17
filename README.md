@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/assets/logo.png" alt="Realtime Spectrogram logo" width="220">
+</p>
+
 # Realtime Spectrogram
 
 A real-time audio spectrogram visualizer that displays frequency spectrum and spectrograms of audio loopback devices. Available in both Python and Rust implementations.
