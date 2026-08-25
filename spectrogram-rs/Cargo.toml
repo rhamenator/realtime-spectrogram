@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-cpal = "0.15"
+cpal = "0.18"
 rustfft = "6.1"
 num-complex = "0.4"
 clap = { version = "4.0", features = ["derive"] }
